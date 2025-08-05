@@ -1,0 +1,32 @@
+{% extends 'planner/base.html' %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h2>Welcome to Optimal Path Planner</h2>
+        <p>Plan your trip with the most efficient route using our advanced optimization algorithm.</p>
+        <a href="{% url 'plan_trip' %}" class="btn btn-primary mb-4">Plan New Trip</a>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12">
+        <h3>Your Recent Trips</h3>
+        {% if trips %}
+            <div class="list-group">
+                {% for trip in trips %}
+                    <a href="{% url 'view_itinerary' trip.id %}" class="list-group-item list-group-item-action">
+                        <div class="d-flex w-100 justify-content-between">
+                            <h5 class="mb-1">{{ trip.title }}</h5>
+                            <small>{{ trip.created_at|date:"M d, Y" }}</small>
+                        </div>
+                        <p class="mb-1">Starting from: {{ trip.start_location }}</p>
+                    </a>
+                {% endfor %}
+            </div>
+        {% else %}
+            <p>No trips planned yet. <a href="{% url 'plan_trip' %}">Plan your first trip!</a></p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

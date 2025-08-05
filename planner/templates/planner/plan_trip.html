@@ -1,0 +1,451 @@
+{% extends 'planner/base.html' %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title">Plan Your Trip</h2>
+                <form method="post" id="tripForm">
+                    {% csrf_token %}
+                    <div class="mb-3">
+                        <label for="title" class="form-label">Trip Title</label>
+                        <input type="text" class="form-control" id="title" name="title" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="start_location" class="form-label">
+                            <i class="bi bi-geo-alt-fill text-success"></i> Starting Location
+                        </label>
+                        <div class="input-group">
+                            <input type="text" class="form-control location-input" id="start_location" name="start_location" required>
+                            <button type="button" class="btn btn-outline-secondary" id="use-current-location">
+                                <i class="bi bi-crosshair"></i>
+                            </button>
+                        </div>
+                        <input type="hidden" id="start_lat" name="start_lat">
+                        <input type="hidden" id="start_lng" name="start_lng">
+                        <small class="text-muted location-details" id="start-location-details"></small>
+                    </div>
+                    <div id="locations-container" class="sortable-container">
+                        <div class="mb-3">
+                            <label class="form-label">
+                                <i class="bi bi-pin-map-fill text-primary"></i> Locations to Visit
+                                <small class="text-muted">(drag to reorder)</small>
+                            </label>
+                            <div class="location-item card mb-2" draggable="true">
+                                <div class="card-body p-2">
+                                    <div class="input-group">
+                                        <span class="input-group-text handle">
+                                            <i class="bi bi-grip-vertical"></i>
+                                        </span>
+                                        <input type="text" class="form-control location-input" name="locations[]" required placeholder="Search for a place...">
+                                        <button type="button" class="btn btn-danger remove-location" style="display: none;">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </div>
+                                    <input type="hidden" name="lat[]">
+                                    <input type="hidden" name="lng[]">
+                                    <input type="hidden" name="place_type[]">
+                                    <small class="text-muted location-details"></small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <button type="button" class="btn btn-secondary" id="add-location">
+                            <i class="bi bi-plus-circle"></i> Add Another Location
+                        </button>
+                        <button type="submit" class="btn btn-primary float-end">
+                            <i class="bi bi-map"></i> Calculate Optimal Route
+                        </button>
+                    </div>
+                </form>
+
+                <div class="card mt-3" id="route-summary" style="display: none;">
+                    <div class="card-body">
+                        <h5 class="card-title">Route Summary</h5>
+                        <div class="d-flex justify-content-between mb-2">
+                            <span><i class="bi bi-clock"></i> Total Time:</span>
+                            <span id="total-time">-</span>
+                        </div>
+                        <div class="d-flex justify-content-between mb-2">
+                            <span><i class="bi bi-speedometer2"></i> Total Distance:</span>
+                            <span id="total-distance">-</span>
+                        </div>
+                        <div class="d-flex justify-content-between">
+                            <span><i class="bi bi-geo"></i> Stops:</span>
+                            <span id="total-stops">-</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-body p-0">
+                <div id="map" style="height: 600px; border-radius: 0.25rem;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://maps.googleapis.com/maps/api/js?key={{ google_maps_api_key }}&libraries=places"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.14.0/Sortable.min.js"></script>
+<script>
+let map;
+let markers = [];
+let directionsService;
+let directionsRenderer;
+let bounds;
+
+function initMap() {
+    map = new google.maps.Map(document.getElementById('map'), {
+        center: { lat: 20.5937, lng: 78.9629 },  // Center of India
+        zoom: 5,
+        styles: [
+            {
+                featureType: "poi",
+                elementType: "labels",
+                stylers: [{ visibility: "off" }]
+            }
+        ]
+    });
+    
+    directionsService = new google.maps.DirectionsService();
+    directionsRenderer = new google.maps.DirectionsRenderer({
+        suppressMarkers: true,
+        preserveViewport: true
+    });
+    directionsRenderer.setMap(map);
+    bounds = new google.maps.LatLngBounds();
+}
+
+function addMarkerWithLabel(location, label, title, icon) {
+    const marker = new google.maps.Marker({
+        position: location,
+        map: map,
+        label: label.toString(),
+        title: title,
+        icon: {
+            url: `http://maps.google.com/mapfiles/ms/icons/${icon || 'red'}-dot.png`
+        },
+        animation: google.maps.Animation.DROP
+    });
+    
+    const infowindow = new google.maps.InfoWindow({
+        content: `<div class="info-window"><h6>${title}</h6></div>`
+    });
+    
+    marker.addListener('click', () => {
+        infowindow.open(map, marker);
+    });
+    
+    markers.push(marker);
+    bounds.extend(location);
+    return marker;
+}
+
+function clearMarkers() {
+    markers.forEach(marker => marker.setMap(null));
+    markers = [];
+    bounds = new google.maps.LatLngBounds();
+    directionsRenderer.setDirections({ routes: [] });
+}
+
+function initAutocomplete(input, latInput, lngInput, placeTypeInput, detailsElement, isStart = false) {
+    const autocomplete = new google.maps.places.Autocomplete(input, {
+        types: ['establishment', 'geocode'],
+        fields: ['place_id', 'geometry', 'name', 'formatted_address', 'types']
+    });
+    
+    autocomplete.addListener('place_changed', function() {
+        const place = autocomplete.getPlace();
+        if (place.geometry) {
+            latInput.value = place.geometry.location.lat();
+            lngInput.value = place.geometry.location.lng();
+            
+            // Set place type
+            if (placeTypeInput) {
+                const placeType = getMainPlaceType(place.types);
+                placeTypeInput.value = placeType;
+            }
+            
+            // Update location details
+            if (detailsElement) {
+                detailsElement.textContent = place.formatted_address;
+            }
+            
+            updateMarkersAndRoute();
+        }
+    });
+}
+
+function getMainPlaceType(types) {
+    const typeMapping = {
+        'restaurant': 'Restaurant',
+        'cafe': 'Café',
+        'museum': 'Museum',
+        'park': 'Park',
+        'tourist_attraction': 'Tourist Attraction',
+        'shopping_mall': 'Shopping Mall',
+        'hotel': 'Hotel',
+        'airport': 'Airport'
+    };
+    
+    for (const type of types) {
+        if (typeMapping[type]) {
+            return typeMapping[type];
+        }
+    }
+    return 'Location';
+}
+
+function updateMarkersAndRoute() {
+    clearMarkers();
+    
+    const startLat = document.getElementById('start_lat').value;
+    const startLng = document.getElementById('start_lng').value;
+    const lats = document.querySelectorAll('input[name="lat[]"]');
+    const lngs = document.querySelectorAll('input[name="lng[]"]');
+    const names = document.querySelectorAll('.location-input');
+    
+    if (startLat && startLng) {
+        const startLocation = { lat: parseFloat(startLat), lng: parseFloat(startLng) };
+        addMarkerWithLabel(startLocation, 'S', names[0].value, 'green');
+    }
+    
+    const waypoints = [];
+    for (let i = 0; i < lats.length; i++) {
+        if (lats[i].value && lngs[i].value) {
+            const location = { 
+                lat: parseFloat(lats[i].value), 
+                lng: parseFloat(lngs[i].value)
+            };
+            addMarkerWithLabel(location, (i + 1).toString(), names[i + 1].value);
+            waypoints.push({
+                location: location,
+                stopover: true
+            });
+        }
+    }
+    
+    if (waypoints.length > 0 && startLat && startLng) {
+        const origin = { lat: parseFloat(startLat), lng: parseFloat(startLng) };
+        calculateAndDisplayRoute(origin, waypoints);
+    } else {
+        map.fitBounds(bounds);
+    }
+}
+
+function calculateAndDisplayRoute(origin, waypoints) {
+    const request = {
+        origin: origin,
+        destination: origin,  // Return to start
+        waypoints: waypoints,
+        optimizeWaypoints: true,
+        travelMode: 'DRIVING'
+    };
+    
+    directionsService.route(request, function(result, status) {
+        if (status === 'OK') {
+            directionsRenderer.setDirections(result);
+            
+            // Update route summary
+            const route = result.routes[0];
+            let totalDistance = 0;
+            let totalDuration = 0;
+            
+            route.legs.forEach(leg => {
+                totalDistance += leg.distance.value;
+                totalDuration += leg.duration.value;
+            });
+            
+            document.getElementById('route-summary').style.display = 'block';
+            document.getElementById('total-time').textContent = formatDuration(totalDuration);
+            document.getElementById('total-distance').textContent = formatDistance(totalDistance);
+            document.getElementById('total-stops').textContent = waypoints.length + ' locations';
+        }
+    });
+}
+
+function formatDuration(seconds) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${hours}h ${minutes}m`;
+}
+
+function formatDistance(meters) {
+    const kilometers = (meters / 1000).toFixed(1);
+    return `${kilometers} km`;
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    initMap();
+    
+    // Initialize Sortable
+    new Sortable(document.querySelector('.sortable-container'), {
+        handle: '.handle',
+        animation: 150,
+        onEnd: updateMarkersAndRoute
+    });
+    
+    // Initialize autocomplete for start location
+    const startInput = document.getElementById('start_location');
+    const startLat = document.getElementById('start_lat');
+    const startLng = document.getElementById('start_lng');
+    initAutocomplete(
+        startInput, 
+        startLat, 
+        startLng, 
+        null,
+        document.getElementById('start-location-details'),
+        true
+    );
+    
+    // Initialize autocomplete for first location
+    const firstItem = document.querySelector('.location-item');
+    initLocationItem(firstItem);
+    
+    // Handle current location button
+    document.getElementById('use-current-location').addEventListener('click', function() {
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(function(position) {
+                const lat = position.coords.latitude;
+                const lng = position.coords.longitude;
+                
+                // Reverse geocode to get address
+                const geocoder = new google.maps.Geocoder();
+                geocoder.geocode({ location: { lat, lng } }, function(results, status) {
+                    if (status === 'OK' && results[0]) {
+                        const startInput = document.getElementById('start_location');
+                        startInput.value = results[0].formatted_address;
+                        document.getElementById('start_lat').value = lat;
+                        document.getElementById('start_lng').value = lng;
+                        document.getElementById('start-location-details').textContent = 
+                            'Using your current location';
+                        updateMarkersAndRoute();
+                    }
+                });
+            });
+        }
+    });
+});
+
+function initLocationItem(item) {
+    const input = item.querySelector('.location-input');
+    const latInput = item.querySelector('input[name="lat[]"]');
+    const lngInput = item.querySelector('input[name="lng[]"]');
+    const typeInput = item.querySelector('input[name="place_type[]"]');
+    const detailsElement = item.querySelector('.location-details');
+    
+    initAutocomplete(input, latInput, lngInput, typeInput, detailsElement);
+}
+
+document.getElementById('add-location').addEventListener('click', function() {
+    const container = document.querySelector('.sortable-container');
+    const locationCount = container.querySelectorAll('.location-item').length;
+    
+    const div = document.createElement('div');
+    div.className = 'location-item card mb-2';
+    div.draggable = true;
+    div.innerHTML = `
+        <div class="card-body p-2">
+            <div class="input-group">
+                <span class="input-group-text handle">
+                    <i class="bi bi-grip-vertical"></i>
+                </span>
+                <input type="text" class="form-control location-input" name="locations[]" required placeholder="Search for a place...">
+                <button type="button" class="btn btn-danger remove-location">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </div>
+            <input type="hidden" name="lat[]">
+            <input type="hidden" name="lng[]">
+            <input type="hidden" name="place_type[]">
+            <small class="text-muted location-details"></small>
+        </div>
+    `;
+    
+    container.appendChild(div);
+    initLocationItem(div);
+    
+    // Show all remove buttons
+    const removeButtons = document.querySelectorAll('.remove-location');
+    removeButtons.forEach(button => button.style.display = 'block');
+});
+
+document.querySelector('.sortable-container').addEventListener('click', function(e) {
+    if (e.target.classList.contains('remove-location') || 
+        e.target.closest('.remove-location')) {
+        const locationItem = e.target.closest('.location-item');
+        locationItem.remove();
+        
+        const removeButtons = document.querySelectorAll('.remove-location');
+        if (removeButtons.length === 1) {
+            removeButtons[0].style.display = 'none';
+        }
+        
+        updateMarkersAndRoute();
+    }
+});
+
+document.getElementById('tripForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const startLat = document.getElementById('start_lat').value;
+    const startLng = document.getElementById('start_lng').value;
+    const locations = document.querySelectorAll('.location-item');
+    
+    if (!startLat || !startLng) {
+        showError('Please select a valid starting location from the suggestions.');
+        return;
+    }
+    
+    if (locations.length < 1) {
+        showError('Please add at least one location to visit.');
+        return;
+    }
+    
+    for (const location of locations) {
+        const lat = location.querySelector('input[name="lat[]"]').value;
+        const lng = location.querySelector('input[name="lng[]"]').value;
+        if (!lat || !lng) {
+            showError('Please select all locations from the suggestions.');
+            return;
+        }
+    }
+    
+    this.submit();
+});
+
+function showError(message) {
+    const alert = document.createElement('div');
+    alert.className = 'alert alert-danger alert-dismissible fade show';
+    alert.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    document.querySelector('.card-body').insertBefore(alert, document.querySelector('form'));
+}
+</script>
+{% endblock %}
+    const removeButtons = document.querySelectorAll('.remove-location');
+    removeButtons.forEach(button => button.style.display = 'block');
+});
+
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('remove-location')) {
+        e.target.closest('.mb-3').remove();
+        
+        // Hide remove button if only one location remains
+        const removeButtons = document.querySelectorAll('.remove-location');
+        if (removeButtons.length === 1) {
+            removeButtons[0].style.display = 'none';
+        }
+    }
+});
+</script>
+{% endblock %}

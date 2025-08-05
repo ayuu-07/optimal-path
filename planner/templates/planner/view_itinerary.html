@@ -1,0 +1,101 @@
+{% extends 'planner/base.html' %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <h2>{{ trip.title }}</h2>
+        <p class="lead">Starting from: {{ trip.start_location }}</p>
+        
+        {% if locations %}
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h3 class="card-title">Optimized Route</h3>
+                </div>
+                <div class="card-body">
+                    <ol class="list-group list-group-numbered">
+                        {% for location in locations %}
+                            <li class="list-group-item">
+                                {{ location.name }}
+                                <small class="text-muted d-block">{{ location.address }}</small>
+                            </li>
+                        {% endfor %}
+                    </ol>
+                </div>
+            </div>
+        {% else %}
+            <p>No locations added to this trip yet.</p>
+        {% endif %}
+        
+        <div class="mt-4">
+            <a href="{% url 'home' %}" class="btn btn-secondary">Back to Home</a>
+            <a href="{% url 'plan_trip' %}" class="btn btn-primary">Plan Another Trip</a>
+            <button class="btn btn-success" id="download-pdf">Download PDF</button>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div id="map" style="height: 500px;"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://maps.googleapis.com/maps/api/js?key={{ google_maps_api_key }}"></script>
+<script>
+function initMap() {
+    const locations = {{ locations_json|safe }};
+    const map = new google.maps.Map(document.getElementById('map'), {
+        zoom: 10
+    });
+    
+    const bounds = new google.maps.LatLngBounds();
+    const markers = [];
+    
+    // Add markers for each location
+    locations.forEach((location, index) => {
+        const position = { lat: location.latitude, lng: location.longitude };
+        const marker = new google.maps.Marker({
+            position: position,
+            map: map,
+            label: (index + 1).toString(),
+            title: location.name
+        });
+        bounds.extend(position);
+        markers.push(marker);
+        
+        // Add info window
+        const infowindow = new google.maps.InfoWindow({
+            content: `
+                <div>
+                    <h5>${location.name}</h5>
+                    <p>${location.address}</p>
+                </div>
+            `
+        });
+        
+        marker.addListener('click', () => {
+            infowindow.open(map, marker);
+        });
+    });
+    
+    // Draw route line
+    const path = new google.maps.Polyline({
+        path: locations.map(loc => ({ lat: loc.latitude, lng: loc.longitude })),
+        geodesic: true,
+        strokeColor: '#FF0000',
+        strokeOpacity: 1.0,
+        strokeWeight: 2
+    });
+    path.setMap(map);
+    
+    // Fit map to show all markers
+    map.fitBounds(bounds);
+    
+    // Center map better when there's only one location
+    if (locations.length === 1) {
+        map.setZoom(13);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', initMap);
+</script>
+{% endblock %}
